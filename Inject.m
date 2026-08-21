@@ -1,70 +1,118 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <Security/Security.h>
-#import <dlfcn.h>
 #import <spawn.h>
+
+// 自定义手势：双指双击
+@interface TwoFingerDoubleTap : UITapGestureRecognizer
+@end
+
+@implementation TwoFingerDoubleTap
+@end
 
 @interface Injector : NSObject
 + (void)load;
-+ (void)setupUI;
++ (void)onAppDidLaunch;
++ (void)addGestureToWindow;
 + (void)showMenu;
 + (void)exportAccount;
 + (void)importAccount;
++ (void)doImportFromPath:(NSString *)zipPath;
 + (void)shareFile:(NSString *)path;
 + (NSData *)dumpKeychain;
 + (void)restoreKeychain:(NSData *)data;
 + (UIViewController *)topViewController;
++ (UIWindow *)getKeyWindow;
 + (int)runCommand:(NSString *)command;
 @end
 
 @implementation Injector
 
 + (void)load {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [Injector setupUI];
-    });
+    NSLog(@"[Injector] dylib loaded, waiting for app launch...");
+    // 监听 App 完全启动通知（比 +load 延迟可靠得多）
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        NSLog(@"[Injector] App did finish launching, scheduling UI setup");
+        // 延迟 2 秒，确保游戏 rootViewController 和 keyWindow 完全就绪
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [Injector onAppDidLaunch];
+        });
+    }];
 }
 
-#pragma mark - UI
+#pragma mark - 手势注册
 
-+ (void)setupUI {
-    UIWindow *window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    window.windowLevel = UIWindowLevelAlert + 1;
-    window.backgroundColor = [UIColor clearColor];
-    window.userInteractionEnabled = YES;
-    window.rootViewController = [[UIViewController alloc] init];
-    window.hidden = NO;
++ (void)onAppDidLaunch {
+    [Injector addGestureToWindow];
 
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(20, 100, 80, 40);
-    [button setTitle:@"备份" forState:UIControlStateNormal];
-    button.backgroundColor = [UIColor whiteColor];
-    button.layer.cornerRadius = 8;
-    button.layer.shadowColor = [UIColor blackColor].CGColor;
-    button.layer.shadowOpacity = 0.5;
-    button.layer.shadowOffset = CGSizeMake(2, 2);
-    button.tintColor = [UIColor blackColor];
-    button.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    [button addTarget:self action:@selector(showMenu) forControlEvents:UIControlEventTouchUpInside];
-    [window addSubview:button];
-
-    // 添加拖拽手势
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-    [button addGestureRecognizer:pan];
-
-    objc_setAssociatedObject([UIApplication sharedApplication], @"injectorWindow", window, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 持续监听 keyWindow 变化（游戏可能重建 window）
+    [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidActivateNotification
+                                                   object:nil
+                                                    queue:[NSOperationQueue mainQueue]
+                                               usingBlock:^(NSNotification * _Nonnull note) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [Injector addGestureToWindow];
+        });
+    }];
 }
 
-+ (void)handlePan:(UIPanGestureRecognizer *)gesture {
-    UIButton *btn = (UIButton *)gesture.view;
-    CGPoint translation = [gesture translationInView:btn.superview];
-    btn.center = CGPointMake(btn.center.x + translation.x, btn.center.y + translation.y);
-    [gesture setTranslation:CGPointZero inView:btn.superview];
++ (void)addGestureToWindow {
+    UIWindow *keyWindow = [Injector getKeyWindow];
+    if (!keyWindow) {
+        NSLog(@"[Injector] keyWindow not found, retrying...");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [Injector addGestureToWindow];
+        });
+        return;
+    }
+
+    // 防止重复添加
+    NSNumber *token = objc_getAssociatedObject(keyWindow, @"injectorGestureAdded");
+    if ([token boolValue]) {
+        return;
+    }
+
+    // 双指双击手势
+    TwoFingerDoubleTap *tap = [[TwoFingerDoubleTap alloc] initWithTarget:self action:@selector(showMenu)];
+    tap.numberOfTapsRequired = 2;      // 双击
+    tap.numberOfTouchesRequired = 2;   // 双指
+    tap.cancelsTouchesInView = NO;     // 不拦截游戏触摸
+    [keyWindow addGestureRecognizer:tap];
+
+    objc_setAssociatedObject(keyWindow, @"injectorGestureAdded", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[Injector] ✅ 双指双击手势已添加到 keyWindow");
 }
+
++ (UIWindow *)getKeyWindow {
+    // iOS 13+: 优先用 UIWindowScene
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                for (UIWindow *w in ws.windows) {
+                    if (!w.hidden && w.alpha > 0) return w;
+                }
+            }
+        }
+    }
+    // Fallback: iOS 12 及以下
+    UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+    if (kw) return kw;
+    // 最终兜底
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (!w.hidden && w.alpha > 0) return w;
+    }
+    return nil;
+}
+
+#pragma mark - 菜单
 
 + (void)showMenu {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"账号管理"
-                                                                   message:@"选择操作"
+                                                                   message:@"双指双击触发\n选择操作"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"📤 导出账号数据" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -91,7 +139,6 @@
     NSString *tmpDir = NSTemporaryDirectory();
     NSString *exportDir = [tmpDir stringByAppendingPathComponent:@"export_backup"];
 
-    // 清理旧的临时目录
     [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
     [[NSFileManager defaultManager] createDirectoryAtPath:exportDir withIntermediateDirectories:YES attributes:nil error:nil];
 
@@ -109,7 +156,7 @@
         }
     }
 
-    // 导出 Keychain 数据（dylib 在进程内运行，有直接 Keychain 访问权限）
+    // 导出 Keychain 数据
     NSData *keychainData = [self dumpKeychain];
     if (keychainData) {
         NSString *kcPath = [exportDir stringByAppendingPathComponent:@"keychain.json"];
@@ -124,10 +171,8 @@
     NSString *cmd = [NSString stringWithFormat:@"cd \"%@\" && /usr/bin/zip -r \"%@\" . 2>&1", exportDir, zipPath];
     [Injector runCommand:cmd];
 
-    // 清理临时目录
     [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
 
-    // 弹窗提示 + 分享
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出完成"
                                                                    message:[NSString stringWithFormat:@"备份已保存:\n%@\n\n点击分享导出文件", zipPath]
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -146,15 +191,11 @@
     NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
-        // 没有备份文件，弹出文件选择器让用户选择
-        UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.zip-archive"] inMode:UIDocumentPickerModeImport];
-        picker.delegate = (id<UIDocumentPickerDelegate>)self;
-        picker.allowsMultipleSelection = NO;
-        // 用 block 关联
-        objc_setAssociatedObject(picker, @"importCallback", ^(NSString *selectedPath) {
-            [Injector doImportFromPath:selectedPath];
-        }, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        [[Injector topViewController] presentViewController:picker animated:YES completion:nil];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未找到备份"
+                                                                       message:@"请将 account_backup.zip 放入游戏 Documents 目录\n或通过分享导入"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+        [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
         return;
     }
 
@@ -172,7 +213,6 @@
     NSString *cmd = [NSString stringWithFormat:@"/usr/bin/unzip -o \"%@\" -d \"%@\" 2>&1", zipPath, extractDir];
     [Injector runCommand:cmd];
 
-    // 覆盖沙盒文件
     NSArray *items = @[@"Documents", @"Preferences", @"Application Support"];
     for (NSString *item in items) {
         NSString *src = [extractDir stringByAppendingPathComponent:item];
@@ -198,7 +238,6 @@
         }
     }
 
-    // 清理
     [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入完成"
@@ -236,9 +275,7 @@
 
     CFTypeRef result = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (status != errSecSuccess || !result) {
-        return nil;
-    }
+    if (status != errSecSuccess || !result) return nil;
 
     NSArray *items = (__bridge_transfer NSArray *)result;
     NSMutableArray *exportList = [NSMutableArray array];
@@ -249,7 +286,6 @@
         NSData *data = item[(__bridge id)kSecValueData];
 
         if (service && account && data) {
-            // 导出所有 keychain 条目（在游戏进程内，这些基本都是游戏自己的）
             [exportList addObject:@{
                 @"service": service,
                 @"account": account,
@@ -259,7 +295,6 @@
     }
 
     if (exportList.count == 0) return nil;
-
     return [NSJSONSerialization dataWithJSONObject:exportList options:NSJSONWritingPrettyPrinted error:nil];
 }
 
@@ -271,13 +306,11 @@
         NSString *service = item[@"service"];
         NSString *account = item[@"account"];
         NSString *base64 = item[@"data"];
-
         if (!service || !account || !base64) continue;
 
         NSData *valueData = [[NSData alloc] initWithBase64EncodedString:base64 options:0];
         if (!valueData) continue;
 
-        // 先删除旧条目
         NSDictionary *delQuery = @{
             (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
             (__bridge id)kSecAttrService: service,
@@ -285,7 +318,6 @@
         };
         SecItemDelete((__bridge CFDictionaryRef)delQuery);
 
-        // 添加新条目
         NSDictionary *addQuery = @{
             (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
             (__bridge id)kSecAttrService: service,
@@ -299,7 +331,8 @@
 #pragma mark - 工具方法
 
 + (UIViewController *)topViewController {
-    UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
+    UIWindow *keyWindow = [Injector getKeyWindow];
+    UIViewController *rootVC = keyWindow.rootViewController;
     while (rootVC.presentedViewController) {
         rootVC = rootVC.presentedViewController;
     }
@@ -307,7 +340,6 @@
 }
 
 + (int)runCommand:(NSString *)command {
-    // 使用 posix_spawn 执行 /bin/sh -c "command" (system() 在 iOS 不可用)
     const char *cmd = [command UTF8String];
     char *argv[] = {"sh", "-c", (char *)cmd, NULL};
     char *envp[] = {NULL};

@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <Security/Security.h>
 #import <dlfcn.h>
+#import <spawn.h>
 
 @interface Injector : NSObject
 + (void)load;
@@ -13,6 +14,7 @@
 + (NSData *)dumpKeychain;
 + (void)restoreKeychain:(NSData *)data;
 + (UIViewController *)topViewController;
++ (int)runCommand:(NSString *)command;
 @end
 
 @implementation Injector
@@ -120,7 +122,7 @@
     [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
 
     NSString *cmd = [NSString stringWithFormat:@"cd \"%@\" && /usr/bin/zip -r \"%@\" . 2>&1", exportDir, zipPath];
-    system([cmd UTF8String]);
+    [Injector runCommand:cmd];
 
     // 清理临时目录
     [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
@@ -168,7 +170,7 @@
     [[NSFileManager defaultManager] createDirectoryAtPath:extractDir withIntermediateDirectories:YES attributes:nil error:nil];
 
     NSString *cmd = [NSString stringWithFormat:@"/usr/bin/unzip -o \"%@\" -d \"%@\" 2>&1", zipPath, extractDir];
-    system([cmd UTF8String]);
+    [Injector runCommand:cmd];
 
     // 覆盖沙盒文件
     NSArray *items = @[@"Documents", @"Preferences", @"Application Support"];
@@ -302,6 +304,22 @@
         rootVC = rootVC.presentedViewController;
     }
     return rootVC;
+}
+
++ (int)runCommand:(NSString *)command {
+    // 使用 posix_spawn 执行 /bin/sh -c "command" (system() 在 iOS 不可用)
+    const char *cmd = [command UTF8String];
+    char *argv[] = {"sh", "-c", (char *)cmd, NULL};
+    char *envp[] = {NULL};
+    pid_t pid = 0;
+    int ret = posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, envp);
+    if (ret != 0) return ret;
+    if (pid > 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        return status;
+    }
+    return -1;
 }
 
 @end

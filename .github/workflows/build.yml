@@ -27,18 +27,26 @@ jobs:
       run: |
         bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
 
-    - name: Verify Theos
+    - name: Verify Theos & Install ldid
       run: |
         if [ ! -f "$THEOS/makefiles/common.mk" ]; then
           echo "Theos incomplete, re-installing..."
           rm -rf "$THEOS"
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
         fi
+        # ldid 是签名必需工具，Theos 安装时通过 brew 装但缓存命中时会跳过
+        if ! command -v ldid &> /dev/null; then
+          echo "ldid not found, installing via brew..."
+          brew install ldid
+        fi
+        echo "=== ldid version ==="
+        ldid || true
         echo "=== Theos SDKs ==="
         ls "$THEOS/sdks/" || true
 
     - name: Build package
       run: |
+        make clean || true
         make package FINALPACKAGE=1 messages=yes
 
     - name: Upload deb

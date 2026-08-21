@@ -20,20 +20,16 @@ jobs:
       run: brew install xcodegen
 
     - name: Generate Xcode Project
-      run: |
-        cd AccountSwitcher
-        xcodegen generate
+      run: xcodegen generate
 
     - name: Resolve Swift Package Dependencies
       run: |
-        cd AccountSwitcher
         xcodebuild -resolvePackageDependencies \
           -project AccountSwitcher.xcodeproj \
           -scheme AccountSwitcher
 
     - name: Build App
       run: |
-        cd AccountSwitcher
         xcodebuild -scheme AccountSwitcher \
           -project AccountSwitcher.xcodeproj \
           -configuration Release \
@@ -49,8 +45,8 @@ jobs:
     - name: Package to TIPA with TrollStore Entitlements
       run: |
         mkdir -p Payload
-        cp -r AccountSwitcher/build/Build/Products/Release-iphoneos/AccountSwitcher.app Payload/
-        ldid -S../Entitlements.plist Payload/AccountSwitcher.app/AccountSwitcher
+        cp -r build/Build/Products/Release-iphoneos/AccountSwitcher.app Payload/
+        ldid -SEntitlements.plist Payload/AccountSwitcher.app/AccountSwitcher
         zip -r AccountSwitcher.tipa Payload
 
     - name: Upload TIPA Artifact

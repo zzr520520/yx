@@ -14,9 +14,7 @@ targets:
     platform: iOS
     deploymentTarget: "15.0"
     sources:
-      - path: AccountSwitcher
-        excludes:
-          - "Info.plist"
+      - AccountSwitcher
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.blizzard.diablo.accountswitcher
@@ -30,18 +28,7 @@ targets:
         SWIFT_VERSION: "5.0"
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         ENABLE_BITCODE: NO
+        INFOPLIST_FILE: AccountSwitcher/AccountSwitcher/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - package: ZIPFoundation
-    info:
-      path: AccountSwitcher/Info.plist
-      properties:
-        CFBundleDisplayName: 账号管理
-        CFBundleName: AccountSwitcher
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
-        UILaunchScreen:
-          UIColorName: ""
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-        UIRequiredDeviceCapabilities:
-          - arm64

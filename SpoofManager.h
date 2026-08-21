@@ -13,6 +13,8 @@
 @interface SpoofManager : NSObject
 + (instancetype)sharedManager;
 - (void)loadConfig;
+- (BOOL)saveConfig;
++ (NSString *)configPath;
 - (SpoofConfig *)currentConfig;
 - (BOOL)switchToModel:(NSString *)modelIdentifier;
 - (NSDictionary *)allSupportedModels;  // 返回完整型号数据库

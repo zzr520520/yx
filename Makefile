@@ -7,14 +7,22 @@ THEOS_PACKAGE_SCHEME = rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = DeviceSpoofPro
+TWEAK_NAME = DeviceSpoofProTweak
+APPLICATION_NAME = DeviceSpoofProApp
 
-DeviceSpoofPro_FILES = Tweak.xm SpoofManager.m KeychainHelper.m fishhook.c
-DeviceSpoofPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-DeviceSpoofPro_FRAMEWORKS = UIKit CoreFoundation Foundation CoreMotion Security
-DeviceSpoofPro_LDFLAGS = -lsubstrate
+# Tweak（后台 Hook dylib）
+DeviceSpoofProTweak_FILES = Tweak.xm SpoofManager.m KeychainHelper.m fishhook.c
+DeviceSpoofProTweak_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+DeviceSpoofProTweak_FRAMEWORKS = UIKit CoreFoundation Foundation CoreMotion Security
+DeviceSpoofProTweak_LDFLAGS = -lsubstrate
+
+# App（桌面图标 + 型号选择界面）
+DeviceSpoofProApp_FILES = App/main.m App/AppDelegate.m App/ConfigViewController.m SpoofManager.m
+DeviceSpoofProApp_CFLAGS = -fobjc-arc
+DeviceSpoofProApp_FRAMEWORKS = UIKit Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+include $(THEOS_MAKE_PATH)/application.mk
 
 after-install::
 	install.exec "killall -9 SpringBoard"

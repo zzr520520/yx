@@ -108,14 +108,8 @@
 }
 
 - (void)loadConfig {
-    // Rootless 越狱使用 /var/jb 前缀，Rootful 使用原始路径
-    NSString *configPath = @"/var/jb/var/mobile/Library/DeviceSpoofPro/config.plist";
+    NSString *configPath = [SpoofManager configPath];
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:configPath];
-    if (!dict) {
-        // 回退到 Rootful 路径
-        configPath = @"/var/mobile/Library/DeviceSpoofPro/config.plist";
-        dict = [NSDictionary dictionaryWithContentsOfFile:configPath];
-    }
 
     if (dict) {
         self.config.modelIdentifier = dict[@"modelIdentifier"] ?: @"iPhone15,2";
@@ -146,6 +140,31 @@
     self.config.udid = [self generateUDID];
     self.config.imei = [self generateIMEI];
     return YES;
+}
+
++ (NSString *)configPath {
+    // Rootless: /var/jb/var/mobile/Library/DeviceSpoofPro/config.plist
+    // Rootful: /var/mobile/Library/DeviceSpoofPro/config.plist
+    NSString *rootlessPath = @"/var/jb/var/mobile/Library/DeviceSpoofPro/config.plist";
+    if ([[NSFileManager defaultManager] fileExistsAtPath:rootlessPath]) return rootlessPath;
+    // 检测 Rootless 环境
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/"]) return rootlessPath;
+    return @"/var/mobile/Library/DeviceSpoofPro/config.plist";
+}
+
+- (BOOL)saveConfig {
+    NSString *path = [SpoofManager configPath];
+    NSString *dir = [path stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSDictionary *dict = @{
+        @"modelIdentifier": self.config.modelIdentifier ?: @"iPhone15,2",
+        @"serialNumber": self.config.serialNumber ?: @"",
+        @"udid": self.config.udid ?: @"",
+        @"imei": self.config.imei ?: @"",
+        @"deviceName": self.config.deviceName ?: @"iPhone",
+    };
+    return [dict writeToFile:path atomically:YES];
 }
 
 - (NSDictionary *)allSupportedModels { return self.modelDatabase; }

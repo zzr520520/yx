@@ -20,6 +20,7 @@ DeviceSpoofProTweak_LDFLAGS = -lsubstrate
 DeviceSpoofProApp_FILES = App/main.m App/AppDelegate.m App/ConfigViewController.m SpoofManager.m
 DeviceSpoofProApp_CFLAGS = -fobjc-arc
 DeviceSpoofProApp_FRAMEWORKS = UIKit Foundation
+DeviceSpoofProApp_CODESIGN_FLAGS = -SApp.entitlements.plist
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/application.mk

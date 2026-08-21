@@ -34,7 +34,6 @@ jobs:
           rm -rf "$THEOS"
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
         fi
-        # ldid 是签名必需工具，Theos 安装时通过 brew 装但缓存命中时会跳过
         if ! command -v ldid &> /dev/null; then
           echo "ldid not found, installing via brew..."
           brew install ldid
@@ -48,6 +47,34 @@ jobs:
       run: |
         make clean || true
         make package FINALPACKAGE=1 messages=yes
+
+    - name: Add postinst script (uicache + killall)
+      run: |
+        brew install dpkg
+        cd packages
+        DEB=$(ls *.deb | head -1)
+        echo "Processing: $DEB"
+        rm -rf extracted
+        dpkg-deb -R "$DEB" extracted
+        cat > extracted/DEBIAN/postinst << 'POSTINST'
+#!/bin/bash
+echo "[DeviceSpoofPro] Running uicache to register app icon..."
+if command -v uicache &>/dev/null; then
+  uicache
+elif [ -x /var/jb/usr/bin/uicache ]; then
+  /var/jb/usr/bin/uicache
+elif [ -x /usr/bin/uicache ]; then
+  /usr/bin/uicache
+fi
+echo "[DeviceSpoofPro] Restarting SpringBoard..."
+killall -9 SpringBoard 2>/dev/null || true
+exit 0
+POSTINST
+        chmod 755 extracted/DEBIAN/postinst
+        dpkg-deb -b extracted "$DEB"
+        rm -rf extracted
+        echo "=== Final deb contents ==="
+        dpkg-deb -c "$DEB"
 
     - name: Upload deb
       uses: actions/upload-artifact@v4

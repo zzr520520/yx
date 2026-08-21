@@ -47,6 +47,9 @@ jobs:
         mkdir -p Payload
         cp -r build/Build/Products/Release-iphoneos/AccountSwitcher.app Payload/
         ldid -SEntitlements.plist Payload/AccountSwitcher.app/AccountSwitcher
+        echo "=== 验证签入的 Entitlements ==="
+        ldid -e Payload/AccountSwitcher.app/AccountSwitcher
+        echo "=== 打包 TIPA ==="
         zip -r AccountSwitcher.tipa Payload
 
     - name: Upload TIPA Artifact

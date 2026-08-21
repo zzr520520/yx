@@ -277,19 +277,13 @@ class AccountManager {
         }
     }
 
-    // 通过 posix_spawn 执行 shell 命令，用文件重定向捕获 stdout+stderr
+    // 通过 posix_spawn 执行 shell 命令，命令自身重定向输出到文件
     // 返回 (是否成功, 输出内容含 stderr)
     private func runShell(_ command: String) -> (Bool, String) {
-        let tmpFile = FileManager.default.temporaryDirectory.appendingPathComponent("cmd_\(UUID().uuidString).log")
-        let tmpPath = strdup(tmpFile.path)
+        let tmpPath = "/tmp/as_cmd_\(UUID().uuidString).log"
+        // shell 命令自己重定向 stdout+stderr 到文件，不依赖 posix_spawn_file_actions
+        let fullCmd = "\(command) > \"\(tmpPath)\" 2>&1"
 
-        // 设置文件重定向：stdout 和 stderr 都写入临时文件
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        posix_spawn_file_actions_addopen(&fileActions, 1, tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-        posix_spawn_file_actions_adddup2(&fileActions, 1, 2)
-
-        let fullCmd = command + " 2>&1"
         var pid: pid_t = 0
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("sh"),
@@ -299,30 +293,28 @@ class AccountManager {
         ]
         var envp: [UnsafeMutablePointer<CChar>?] = [nil]
 
-        let ret = posix_spawn(&pid, "/bin/sh", &fileActions, nil, &argv, &envp)
+        // file_actions 传 nil，用最简模式 spawn
+        let ret = posix_spawn(&pid, "/bin/sh", nil, nil, &argv, &envp)
 
-        // 释放资源
-        posix_spawn_file_actions_destroy(&fileActions)
-        free(tmpPath)
         for i in 0..<3 { free(argv[i]) }
 
         if ret != 0 {
-            return (false, "posix_spawn 失败: \(ret)")
+            return (false, "posix_spawn 失败: \(ret) (errno=\(errno))")
         }
 
         if pid > 0 {
             var status: Int32 = 0
             waitpid(pid, &status, 0)
-            // 读取输出
+            // 读取命令输出
             var output = ""
-            if let data = try? Data(contentsOf: tmpFile) {
+            if let data = FileManager.default.contents(atPath: tmpPath) {
                 output = String(data: data, encoding: .utf8) ?? ""
             }
-            try? FileManager.default.removeItem(at: tmpFile)
+            try? FileManager.default.removeItem(atPath: tmpPath)
             return (status == 0, output.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
-        try? FileManager.default.removeItem(at: tmpFile)
+        try? FileManager.default.removeItem(atPath: tmpPath)
         return (false, "进程未启动")
     }
 

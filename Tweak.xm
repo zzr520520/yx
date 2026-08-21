@@ -102,7 +102,7 @@ __attribute__((constructor)) static void entry() {
             SEL sel = @selector(rotationRate);
             Method m = class_getInstanceMethod(gyroClass, sel);
             if (m) {
-                orig_rotationRate = (void *)method_getImplementation(m);
+                orig_rotationRate = (typeof(orig_rotationRate))method_getImplementation(m);
                 method_setImplementation(m, (IMP)hooked_rotationRate);
             }
         }

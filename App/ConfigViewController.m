@@ -1,5 +1,6 @@
 #import "ConfigViewController.h"
 #import "SpoofManager.h"
+#import <spawn.h>
 
 @interface ConfigViewController ()
 @property (nonatomic, strong) NSArray *sortedKeys;
@@ -98,8 +99,15 @@
 }
 
 - (void)restartSpringBoard {
-    // 通过 posix_spawn 重启 SpringBoard
-    system("killall -9 SpringBoard");
+    // 通过 posix_spawn 重启 SpringBoard（system() 在 iOS 上不可用）
+    pid_t pid = 0;
+    char *argv[] = {"killall", "-9", "SpringBoard", NULL};
+    char *envp[] = {NULL};
+    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, argv, envp);
+    if (pid > 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);
+    }
 }
 
 - (void)showAlert:(NSString *)title message:(NSString *)msg {

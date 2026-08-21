@@ -277,20 +277,53 @@ class AccountManager {
         }
     }
 
-    // 通过 popen 执行 shell 命令（popen 是 C 标准库函数，iOS SDK 可用）
+    // 通过 posix_spawn 执行 shell 命令，用文件重定向捕获 stdout+stderr
     // 返回 (是否成功, 输出内容含 stderr)
     private func runShell(_ command: String) -> (Bool, String) {
+        let tmpFile = FileManager.default.temporaryDirectory.appendingPathComponent("cmd_\(UUID().uuidString).log")
+        let tmpPath = strdup(tmpFile.path)
+
+        // 设置文件重定向：stdout 和 stderr 都写入临时文件
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_addopen(&fileActions, 1, tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        posix_spawn_file_actions_adddup2(&fileActions, 1, 2)
+
         let fullCmd = command + " 2>&1"
-        guard let pipe = popen(fullCmd, "r") else {
-            return (false, "popen 失败")
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [
+            strdup("sh"),
+            strdup("-c"),
+            strdup(fullCmd),
+            nil
+        ]
+        var envp: [UnsafeMutablePointer<CChar>?] = [nil]
+
+        let ret = posix_spawn(&pid, "/bin/sh", &fileActions, nil, &argv, &envp)
+
+        // 释放资源
+        posix_spawn_file_actions_destroy(&fileActions)
+        free(tmpPath)
+        for i in 0..<3 { free(argv[i]) }
+
+        if ret != 0 {
+            return (false, "posix_spawn 失败: \(ret)")
         }
-        var output = ""
-        var buf = [CChar](repeating: 0, count: 4096)
-        while fgets(&buf, Int32(buf.count), pipe) != nil {
-            output += String(cString: buf)
+
+        if pid > 0 {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            // 读取输出
+            var output = ""
+            if let data = try? Data(contentsOf: tmpFile) {
+                output = String(data: data, encoding: .utf8) ?? ""
+            }
+            try? FileManager.default.removeItem(at: tmpFile)
+            return (status == 0, output.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        let status = pclose(pipe)
-        return (status == 0, output.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        try? FileManager.default.removeItem(at: tmpFile)
+        return (false, "进程未启动")
     }
 
     // 降级拷贝：依次尝试 ditto -> cp -R -> FileManager

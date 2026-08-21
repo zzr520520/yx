@@ -78,6 +78,8 @@ struct ContentView: View {
     @State private var showAlert = false
     @State private var inputAccountName = ""
     @State private var showInputDialog = false
+    @State private var isProcessing = false
+    @State private var processingText = ""
 
     var body: some View {
         NavigationView {
@@ -158,15 +160,19 @@ struct ContentView: View {
                                         showAlert = true
                                         return
                                     }
+                                    isProcessing = true
+                                    processingText = "正在生效..."
                                     AccountManager.shared.applyAccount(target: target, fileURL: item.fileURL) { success, msg in
+                                        isProcessing = false
                                         if success { activeFileName = item.name }
                                         alertMsg = msg
                                         showAlert = true
                                     }
                                 }
+                                .disabled(isProcessing)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(Color.blue)
+                                .background(isProcessing ? Color.gray : Color.blue)
                                 .foregroundColor(.white)
                                 .font(.caption)
                                 .cornerRadius(4)
@@ -175,6 +181,7 @@ struct ContentView: View {
                                     try? FileManager.default.removeItem(at: item.fileURL)
                                     loadFiles()
                                 }
+                                .disabled(isProcessing)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
                                 .background(Color.red)
@@ -201,14 +208,35 @@ struct ContentView: View {
                         .bold()
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(selectedTarget == nil ? Color.gray : Color.blue)
+                        .background(selectedTarget == nil ? Color.gray : (isProcessing ? Color.gray : Color.blue))
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(selectedTarget == nil)
+                .disabled(selectedTarget == nil || isProcessing)
                 .padding()
             }
             .navigationTitle("账号数据管理")
+            // Loading 遮罩
+            .overlay(
+                Group {
+                    if isProcessing {
+                        ZStack {
+                            Color.black.opacity(0.4)
+                                .ignoresSafeArea()
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .scaleEffect(1.5)
+                                Text(processingText)
+                                    .foregroundColor(.white)
+                                    .font(.headline)
+                            }
+                            .padding(30)
+                            .background(Color(UIColor.systemBackground))
+                            .cornerRadius(12)
+                        }
+                    }
+                }
+            )
             .sheet(isPresented: $showAppPicker) {
                 AppPickerView(apps: allApps, selectedApp: $selectedTarget)
             }
@@ -221,7 +249,10 @@ struct ContentView: View {
                     Button("立即导出") {
                         showInputDialog = false
                         guard let target = selectedTarget, !inputAccountName.isEmpty else { return }
+                        isProcessing = true
+                        processingText = "正在备份..."
                         AccountManager.shared.exportAccount(target: target, name: inputAccountName) { success, msg in
+                            isProcessing = false
                             loadFiles()
                             alertMsg = msg
                             showAlert = true

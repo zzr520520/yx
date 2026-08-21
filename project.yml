@@ -2,7 +2,7 @@ name: AccountSwitcher
 options:
   bundleIdPrefix: com.blizzard
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "14.0"
   createIntermediateGroups: true
 packages:
   ZIPFoundation:
@@ -12,7 +12,7 @@ targets:
   AccountSwitcher:
     type: application
     platform: iOS
-    deploymentTarget: "15.0"
+    deploymentTarget: "14.0"
     sources:
       - AccountSwitcher
     settings:
@@ -26,7 +26,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ""
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
-        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "14.0"
         ENABLE_BITCODE: NO
         INFOPLIST_FILE: AccountSwitcher/AccountSwitcher/Info.plist
         GENERATE_INFOPLIST_FILE: NO

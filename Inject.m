@@ -7,8 +7,23 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #endif
 
-// 前向声明
-@class Injector;
+// 前向声明（完整接口，让 ProgressHUD 能调用 getKeyWindow）
+@interface Injector : NSObject
++ (void)load;
++ (void)onAppDidLaunch;
++ (void)addGestureToWindow;
++ (void)showMenu;
++ (void)exportAccount;
++ (void)importAccount;
++ (void)doImportFromPath:(NSString *)zipPath;
++ (void)shareFile:(NSString *)path;
++ (NSData *)dumpKeychain;
++ (void)restoreKeychain:(NSData *)data;
++ (UIViewController *)topViewController;
++ (UIWindow *)getKeyWindow;
++ (int)runCommand:(NSString *)command;
++ (void)showAlert:(NSString *)title message:(NSString *)msg;
+@end
 
 // 双指双击手势
 @interface TwoFingerDoubleTap : UITapGestureRecognizer @end
@@ -134,23 +149,6 @@
     });
 }
 
-@end
-
-@interface Injector : NSObject
-+ (void)load;
-+ (void)onAppDidLaunch;
-+ (void)addGestureToWindow;
-+ (void)showMenu;
-+ (void)exportAccount;
-+ (void)importAccount;
-+ (void)doImportFromPath:(NSString *)zipPath;
-+ (void)shareFile:(NSString *)path;
-+ (NSData *)dumpKeychain;
-+ (void)restoreKeychain:(NSData *)data;
-+ (UIViewController *)topViewController;
-+ (UIWindow *)getKeyWindow;
-+ (int)runCommand:(NSString *)command;
-+ (void)showAlert:(NSString *)title message:(NSString *)msg;
 @end
 
 @implementation Injector

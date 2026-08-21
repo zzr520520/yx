@@ -7,9 +7,71 @@ struct ProfileItem: Identifiable {
     let fileURL: URL
 }
 
+// 全部应用选择弹窗
+struct AppPickerView: View {
+    let apps: [AppTarget]
+    @Binding var selectedApp: AppTarget?
+    @Environment(\.presentationMode) var presentationMode
+    @State private var searchText = ""
+
+    var filteredApps: [AppTarget] {
+        if searchText.isEmpty { return apps }
+        return apps.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchText) ||
+            $0.bundleID.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack {
+                TextField("🔍 搜索应用名称或 Bundle ID...", text: $searchText)
+                    .padding(8)
+                    .background(Color(UIColor.systemGray6))
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+
+                List(filteredApps) { app in
+                    Button(action: {
+                        selectedApp = app
+                        presentationMode.wrappedValue.dismiss()
+                    }) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(app.displayName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if selectedApp?.id == app.id {
+                                    Image(systemName: "checkmark").foregroundColor(.blue)
+                                }
+                            }
+                            Text(app.bundleID)
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                            Text(app.dataContainerURL.path)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .listStyle(PlainListStyle())
+            }
+            .navigationTitle("选择目标应用")
+            .navigationBarItems(trailing: Button("关闭") {
+                presentationMode.wrappedValue.dismiss()
+            })
+        }
+    }
+}
+
 struct ContentView: View {
-    @State private var instances: [AppTarget] = []
-    @State private var selectedInstance: AppTarget? = nil
+    @State private var allApps: [AppTarget] = []
+    @State private var selectedTarget: AppTarget? = nil
+    @State private var showAppPicker = false
+
     @State private var profileList: [ProfileItem] = []
     @State private var activeFileName: String = ""
     @State private var alertMsg = ""
@@ -20,38 +82,35 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶部多开分身选择器
-                VStack(alignment: .leading, spacing: 6) {
+                // 顶部目标应用卡片
+                Button(action: { showAppPicker = true }) {
                     HStack {
-                        Text("目标分身:")
-                            .font(.subheadline)
-                            .bold()
-
-                        if instances.isEmpty {
-                            Text("未扫描到暗黑破坏神分身")
-                                .foregroundColor(.red)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("当前选定目标:")
                                 .font(.caption)
-                        } else {
-                            Picker("选择分身", selection: $selectedInstance) {
-                                ForEach(instances, id: \.self) { app in
-                                    Text("\(app.displayName) (\(app.bundleID))").tag(Optional(app))
-                                }
+                                .foregroundColor(.gray)
+                            if let target = selectedTarget {
+                                Text(target.displayName)
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.blue)
+                                Text(target.bundleID)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("点击选择应用 (支持全盘所有App及多开)")
+                                    .font(.subheadline)
+                                    .foregroundColor(.red)
                             }
-                            .pickerStyle(MenuPickerStyle())
                         }
-
                         Spacer()
-
-                        Button(action: refreshTargets) {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14))
-                        }
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(.gray)
                     }
+                    .padding()
+                    .background(Color(UIColor.secondarySystemBackground))
                 }
-                .padding()
-                .background(Color(UIColor.secondarySystemBackground))
 
-                // 分割标签栏
+                // 标签栏
                 HStack(spacing: 30) {
                     Text("YOLO文件").foregroundColor(.gray)
                     Text("脚本文件").bold().foregroundColor(.blue)
@@ -94,8 +153,8 @@ struct ContentView: View {
 
                             HStack(spacing: 6) {
                                 Button("生效") {
-                                    guard let target = selectedInstance else {
-                                        alertMsg = "请先选择目标分身"
+                                    guard let target = selectedTarget else {
+                                        alertMsg = "请先点击顶部选择目标应用！"
                                         showAlert = true
                                         return
                                     }
@@ -129,33 +188,29 @@ struct ContentView: View {
                 }
                 .listStyle(PlainListStyle())
 
-                // 底部导出当前选定分身账号
+                // 底部备份按钮
                 Button(action: {
-                    if selectedInstance == nil {
-                        alertMsg = "未选择任何分身"
+                    if selectedTarget == nil {
+                        alertMsg = "请先点击顶部选择要备份的应用"
                         showAlert = true
                     } else {
                         showInputDialog = true
                     }
                 }) {
-                    Text(selectedInstance == nil ? "请选择分身" : "备份当前 [\(selectedInstance!.displayName)] 数据")
+                    Text(selectedTarget == nil ? "请先选择目标应用" : "备份当前 [\(selectedTarget!.displayName)] 数据")
                         .bold()
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(selectedInstance == nil ? Color.gray : Color.blue)
+                        .background(selectedTarget == nil ? Color.gray : Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(selectedInstance == nil)
+                .disabled(selectedTarget == nil)
                 .padding()
             }
             .navigationTitle("账号数据管理")
-            .onAppear {
-                refreshTargets()
-                loadFiles()
-            }
-            .alert(isPresented: $showAlert) {
-                Alert(title: Text("提示"), message: Text(alertMsg), dismissButton: .default(Text("确定")))
+            .sheet(isPresented: $showAppPicker) {
+                AppPickerView(apps: allApps, selectedApp: $selectedTarget)
             }
             .sheet(isPresented: $showInputDialog) {
                 VStack(spacing: 20) {
@@ -165,7 +220,7 @@ struct ContentView: View {
                         .padding()
                     Button("立即导出") {
                         showInputDialog = false
-                        guard let target = selectedInstance, !inputAccountName.isEmpty else { return }
+                        guard let target = selectedTarget, !inputAccountName.isEmpty else { return }
                         AccountManager.shared.exportAccount(target: target, name: inputAccountName) { success, msg in
                             loadFiles()
                             alertMsg = msg
@@ -176,13 +231,25 @@ struct ContentView: View {
                 }
                 .padding()
             }
+            .alert(isPresented: $showAlert) {
+                Alert(title: Text("提示"), message: Text(alertMsg), dismissButton: .default(Text("确定")))
+            }
+            .onAppear {
+                reloadAllApps()
+                loadFiles()
+            }
         }
     }
 
-    func refreshTargets() {
-        self.instances = AccountManager.shared.scanInstalledInstances()
-        if self.selectedInstance == nil || !self.instances.contains(where: { $0.id == self.selectedInstance?.id }) {
-            self.selectedInstance = self.instances.first
+    func reloadAllApps() {
+        self.allApps = AccountManager.shared.scanAllInstalledApps()
+        if selectedTarget == nil {
+            // 默认优先选中第一个包含暗黑/暴雪的应用
+            selectedTarget = allApps.first(where: {
+                $0.displayName.contains("暗黑") ||
+                $0.bundleID.lowercased().contains("diablo") ||
+                $0.bundleID.lowercased().contains("blizzard")
+            }) ?? allApps.first
         }
     }
 

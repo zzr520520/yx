@@ -2,19 +2,19 @@ import Foundation
 import Security
 import ZIPFoundation
 
-// 游戏分身应用模型
+// 应用模型
 struct AppTarget: Identifiable, Hashable {
-    let id: String // Bundle ID 作为唯一标识
+    var id: String { bundleID + "_" + (dataContainerURL.path) }
     let displayName: String
     let bundleID: String
     let dataContainerURL: URL
-    let bundleContainerURL: URL?
+    let bundleURL: URL?
+    let isUserApp: Bool
 }
 
 class AccountManager {
     static let shared = AccountManager()
 
-    // 账号文件存储主目录 (存放 .lrj 文件)
     var storageDir: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("AccountProfiles")
@@ -22,66 +22,80 @@ class AccountManager {
         return dir
     }
 
-    // 扫描系统中所有暗黑破坏神（包括所有分身与多开）
-    func scanInstalledInstances() -> [AppTarget] {
+    // 扫描系统中【所有】已安装的应用（官方、巨魔、多开、分身）
+    func scanAllInstalledApps() -> [AppTarget] {
         var targets: [AppTarget] = []
-        let dataBasePath = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application")
-        let bundleBasePath = URL(fileURLWithPath: "/var/mobile/Containers/Bundle/Application")
+        var seenPaths = Set<String>()
 
-        guard let dataDirs = try? FileManager.default.contentsOfDirectory(at: dataBasePath, includingPropertiesForKeys: nil) else {
-            return targets
-        }
+        // 方案 1：优先使用 LSApplicationWorkspace 私有类获取
+        if let workspaceClass = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
+           let workspace = workspaceClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue() as? NSObject,
+           let apps = workspace.perform(NSSelectorFromString("allApplications"))?.takeUnretainedValue() as? [NSObject] {
 
-        for dir in dataDirs {
-            let metadataPlist = dir.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
-            guard let dict = NSDictionary(contentsOf: metadataPlist),
-                  let identifier = dict["MCMMetadataIdentifier"] as? String else {
-                continue
-            }
-
-            // 过滤暗黑破坏神相关的 Bundle ID (支持官方、多开分身、修改版)
-            let lowerID = identifier.lowercased()
-            if lowerID.contains("diablo") || lowerID.contains("blizzard") || lowerID.contains("immortal") {
-                var displayName = identifier
-                var appBundleURL: URL? = nil
-
-                // 尝试从 Bundle 目录获取真实 App 显示名
-                if let bundleDirs = try? FileManager.default.contentsOfDirectory(at: bundleBasePath, includingPropertiesForKeys: nil) {
-                    for bDir in bundleDirs {
-                        let bMeta = bDir.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
-                        if let bDict = NSDictionary(contentsOf: bMeta),
-                           let bID = bDict["MCMMetadataIdentifier"] as? String,
-                           bID == identifier {
-                            appBundleURL = bDir
-                            if let appFolder = try? FileManager.default.contentsOfDirectory(at: bDir, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "app" }),
-                               let infoPlist = NSDictionary(contentsOf: appFolder.appendingPathComponent("Info.plist")) {
-                                displayName = (infoPlist["CFBundleDisplayName"] as? String) ?? (infoPlist["CFBundleName"] as? String) ?? identifier
-                            }
-                            break
-                        }
-                    }
+            for appProxy in apps {
+                guard let bundleID = appProxy.value(forKey: "applicationIdentifier") as? String,
+                      let dataURL = appProxy.value(forKey: "dataContainerURL") as? URL else {
+                    continue
                 }
 
+                let localizedName = (appProxy.value(forKey: "localizedName") as? String) ?? bundleID
+                let bundleURL = appProxy.value(forKey: "bundleURL") as? URL
+                let appType = (appProxy.value(forKey: "applicationType") as? String) ?? "User"
+
+                seenPaths.insert(dataURL.path)
+
                 targets.append(AppTarget(
-                    id: identifier,
-                    displayName: displayName,
-                    bundleID: identifier,
-                    dataContainerURL: dir,
-                    bundleContainerURL: appBundleURL
+                    displayName: localizedName.isEmpty ? bundleID : localizedName,
+                    bundleID: bundleID,
+                    dataContainerURL: dataURL,
+                    bundleURL: bundleURL,
+                    isUserApp: appType == "User"
                 ))
             }
         }
-        return targets
+
+        // 方案 2：全盘扫描 /var/mobile/Containers/Data/Application 兜底，防止私有API漏掉多开
+        let dataBasePath = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application")
+        if let subdirs = try? FileManager.default.contentsOfDirectory(at: dataBasePath, includingPropertiesForKeys: nil) {
+            for dir in subdirs {
+                if seenPaths.contains(dir.path) { continue }
+
+                let metaPlist = dir.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
+                var identifier = dir.lastPathComponent
+
+                if let dict = NSDictionary(contentsOf: metaPlist),
+                   let mcmID = dict["MCMMetadataIdentifier"] as? String {
+                    identifier = mcmID
+                }
+
+                targets.append(AppTarget(
+                    displayName: "[未知/分身] \(identifier)",
+                    bundleID: identifier,
+                    dataContainerURL: dir,
+                    bundleURL: nil,
+                    isUserApp: true
+                ))
+            }
+        }
+
+        // 优先将用户安装的应用和包含 diablo / 暗黑 的排在最前面
+        return targets.sorted { a, b in
+            let aIsDiablo = a.displayName.contains("暗黑") || a.bundleID.lowercased().contains("diablo") || a.bundleID.lowercased().contains("blizzard")
+            let bIsDiablo = b.displayName.contains("暗黑") || b.bundleID.lowercased().contains("diablo") || b.bundleID.lowercased().contains("blizzard")
+            if aIsDiablo && !bIsDiablo { return true }
+            if !aIsDiablo && bIsDiablo { return false }
+            return a.displayName.localizedCompare(b.displayName) == .orderedAscending
+        }
     }
 
-    // 1. 导出指定分身的账号备份 (.lrj)
+    // 1. 导出账号备份 (.lrj)
     func exportAccount(target: AppTarget, name: String, completion: @escaping (Bool, String) -> Void) {
         let container = target.dataContainerURL
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         do {
-            // 备份 Preferences (存有本地配置与部分Token)
+            // 备份 Preferences
             let prefsSrc = container.appendingPathComponent("Library/Preferences")
             let prefsDst = tempDir.appendingPathComponent("Preferences")
             if FileManager.default.fileExists(atPath: prefsSrc.path) {
@@ -95,21 +109,26 @@ class AccountManager {
                 try FileManager.default.copyItem(at: appSupportSrc, to: appSupportDst)
             }
 
+            // 备份 Documents (有些游戏会将Token存在这里)
+            let docsSrc = container.appendingPathComponent("Documents")
+            let docsDst = tempDir.appendingPathComponent("Documents")
+            if FileManager.default.fileExists(atPath: docsSrc.path) {
+                try FileManager.default.copyItem(at: docsSrc, to: docsDst)
+            }
+
             // 导出相关的 Keychain 数据
-            let keychainData = dumpKeychainData(bundleID: target.bundleID)
-            if let keychainData = keychainData {
+            if let keychainData = dumpKeychainData(bundleID: target.bundleID) {
                 let kcFile = tempDir.appendingPathComponent("keychain.json")
                 try keychainData.write(to: kcFile)
             }
 
-            // 打包成 .lrj 文件
+            // 打包为 .lrj
             let targetZip = storageDir.appendingPathComponent("\(name).lrj")
             if FileManager.default.fileExists(atPath: targetZip.path) {
                 try FileManager.default.removeItem(at: targetZip)
             }
             try FileManager.default.zipItem(at: tempDir, to: targetZip)
 
-            // 清理临时文件
             try? FileManager.default.removeItem(at: tempDir)
             completion(true, "导出成功: \(name).lrj")
         } catch {
@@ -117,32 +136,33 @@ class AccountManager {
         }
     }
 
-    // 2. 将 .lrj 注入并生效到指定的分身
+    // 2. 将 .lrj 注入生效到指定分身
     func applyAccount(target: AppTarget, fileURL: URL, completion: @escaping (Bool, String) -> Void) {
         let container = target.dataContainerURL
 
-        // 强退游戏进程 (防止写入冲突)
-        killGameProcess()
+        // 强退进程
+        killAllDiablo()
 
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         do {
             try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
             try FileManager.default.unzipItem(at: fileURL, to: tempDir)
 
-            // 覆写沙盒关键文件
-            let itemsToRestore = ["Preferences", "Application Support"]
+            // 恢复 Preferences、Application Support、Documents
+            let itemsToRestore = ["Preferences", "Application Support", "Documents"]
             for item in itemsToRestore {
                 let src = tempDir.appendingPathComponent(item)
-                let dst = container.appendingPathComponent("Library/\(item)")
+                let dst = item == "Documents" ? container.appendingPathComponent("Documents") : container.appendingPathComponent("Library/\(item)")
+
                 if FileManager.default.fileExists(atPath: src.path) {
                     if FileManager.default.fileExists(atPath: dst.path) {
-                        try FileManager.default.removeItem(at: dst)
+                        try? FileManager.default.removeItem(at: dst)
                     }
                     try FileManager.default.copyItem(at: src, to: dst)
                 }
             }
 
-            // 恢复 Keychain 凭证
+            // 恢复 Keychain
             let kcFile = tempDir.appendingPathComponent("keychain.json")
             if FileManager.default.fileExists(atPath: kcFile.path) {
                 let data = try Data(contentsOf: kcFile)
@@ -156,7 +176,6 @@ class AccountManager {
         }
     }
 
-    // 提取 Keychain 数据
     private func dumpKeychainData(bundleID: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -170,7 +189,11 @@ class AccountManager {
             var exportList: [[String: String]] = []
             for item in items {
                 if let service = item[kSecAttrService as String] as? String {
-                    if service.contains("blizzard") || service.contains("diablo") || service.contains(bundleID) {
+                    // 放宽匹配规则，包含通用凭证
+                    if service.lowercased().contains("blizzard") ||
+                       service.lowercased().contains("diablo") ||
+                       service.contains(bundleID) ||
+                       service.lowercased().contains("battle.net") {
                         if let account = item[kSecAttrAccount as String] as? String,
                            let data = item[kSecValueData as String] as? Data {
                             exportList.append([
@@ -187,7 +210,6 @@ class AccountManager {
         return nil
     }
 
-    // 恢复 Keychain 数据
     private func restoreKeychainData(data: Data) {
         guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return }
         for item in list {
@@ -215,7 +237,7 @@ class AccountManager {
 
     // 终止所有暗黑相关进程
     // 注：iOS SDK 不提供 Process/NSTask/system()，使用 posix_spawn 调用 killall
-    private func killGameProcess() {
+    private func killAllDiablo() {
         var pid: pid_t = 0
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("killall"),

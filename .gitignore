@@ -1,19 +1,5 @@
-# Xcode
-build/
-DerivedData/
-*.xcuserstate
-*.xcuserdatad/
-xcuserdata/
-*.xcodeproj/xcuserdata/
-*.xcworkspace/xcuserdata/
-
-# SPM
-.build/
-Package.resolved
-
-# macOS
 .DS_Store
-
-# Build output
-Payload/
-*.tipa
+.theos
+packages
+obj
+*.deb

@@ -1,20 +1,20 @@
-TARGET = Inject.dylib
-SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
-ARCH = arm64
-CC = clang
-CFLAGS = -arch $(ARCH) -isysroot $(SDK) -mios-version-min=14.0 -fobjc-arc -fmodules
+TARGET := iphone:clang:latest:15.0
+INSTALL_TARGET_PROCESSES = SpringBoard
 
-# SSZipArchive 源码目录（需要手动下载或由 CI 下载）
-SSZIP_DIR = SSZipArchive
-SSZIP_SOURCES = $(shell find $(SSZIP_DIR) -name "*.m" -o -name "*.c" 2>/dev/null)
+ARCHS = arm64 arm64e
+FINALPACKAGE = 1
 
-$(TARGET): Inject.m $(SSZIP_SOURCES)
-	$(CC) $(CFLAGS) -dynamiclib -o $@ $^ \
-		-I$(SSZIP_DIR) -I$(SSZIP_DIR)/minizip \
-		-framework UIKit -framework Foundation -framework Security \
-		-lz
+include $(THEOS)/makefiles/common.mk
 
-clean:
-	rm -f $(TARGET)
+TWEAK_NAME = DeviceSpoofPro
 
-.PHONY: clean
+DeviceSpoofPro_FILES = Tweak.xm SpoofManager.m KeychainHelper.m fishhook.c
+DeviceSpoofPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+DeviceSpoofPro_FRAMEWORKS = UIKit CoreFoundation Foundation CoreMotion Security
+DeviceSpoofPro_PRIVATE_FRAMEWORKS = MobileGestalt
+DeviceSpoofPro_LDFLAGS = -lsubstrate
+
+include $(THEOS_MAKE_PATH)/tweak.mk
+
+after-install::
+	install.exec "killall -9 SpringBoard"

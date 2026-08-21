@@ -1,0 +1,9 @@
+Package: com.yourusername.devicespoofpro
+Name: DeviceSpoofPro
+Version: 3.0.0
+Architecture: iphoneos-arm64
+Description: Industrial-grade device fingerprint spoofing with full iPhone 6-17 model database
+Maintainer: Your Name <email@example.com>
+Author: Your Name <email@example.com>
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)

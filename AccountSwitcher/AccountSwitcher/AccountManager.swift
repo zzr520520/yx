@@ -172,7 +172,7 @@ class AccountManager {
 
                     if FileManager.default.fileExists(atPath: src.path) {
                         if FileManager.default.fileExists(atPath: dst.path) {
-                            try? FileManager.default.removeItem(at: dst)
+                            self.removeItemWithFallback(at: dst)
                         }
                         try self.copyItemWithFallback(from: src, to: dst)
                     }
@@ -277,41 +277,54 @@ class AccountManager {
         }
     }
 
-    // 降级拷贝：FileManager.copyItem 失败时，用 posix_spawn 调 cp -rf 跨沙盒拷贝
+    // 通过 popen 执行 shell 命令（popen 是 C 标准库函数，iOS SDK 可用）
+    // 返回 (是否成功, 输出内容含 stderr)
+    private func runShell(_ command: String) -> (Bool, String) {
+        let fullCmd = command + " 2>&1"
+        guard let pipe = popen(fullCmd, "r") else {
+            return (false, "popen 失败")
+        }
+        var output = ""
+        var buf = [CChar](repeating: 0, count: 4096)
+        while fgets(&buf, Int32(buf.count), pipe) != nil {
+            output += String(cString: buf)
+        }
+        let status = pclose(pipe)
+        return (status == 0, output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    // 降级拷贝：依次尝试 ditto -> cp -R -> FileManager
     private func copyItemWithFallback(from src: URL, to dst: URL) throws {
-        // 先尝试 FileManager 标准拷贝
+        // 方案 1: ditto（Apple 原生工具，保留权限属性，跨沙盒能力最强）
+        let dittoCmd = "ditto \"\(src.path)\" \"\(dst.path)\""
+        let (dittoOk, dittoErr) = runShell(dittoCmd)
+        if dittoOk {
+            return
+        }
+
+        // 方案 2: cp -R
+        let cpCmd = "cp -R \"\(src.path)\" \"\(dst.path)\""
+        let (cpOk, cpErr) = runShell(cpCmd)
+        if cpOk {
+            return
+        }
+
+        // 方案 3: FileManager 最后尝试
         do {
             try FileManager.default.copyItem(at: src, to: dst)
+            return
         } catch {
-            // FileManager 失败，降级用 cp -rf
-            let result = spawnCp(src: src, dst: dst)
-            if !result {
-                throw error
-            }
+            // 全部失败，抛出包含所有错误信息的聚合错误
+            throw NSError(domain: "AccountSwitcher", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "拷贝失败 [ditto: \(dittoErr)] [cp: \(cpErr)] [FM: \(error.localizedDescription)]"
+            ])
         }
     }
 
-    // 通过 posix_spawn 调用 /bin/cp -rf 实现跨沙盒拷贝
-    private func spawnCp(src: URL, dst: URL) -> Bool {
-        var pid: pid_t = 0
-        var argv: [UnsafeMutablePointer<CChar>?] = [
-            strdup("cp"),
-            strdup("-rf"),
-            strdup(src.path),
-            strdup(dst.path),
-            nil
-        ]
-        var envp: [UnsafeMutablePointer<CChar>?] = [nil]
-        let ret = posix_spawn(&pid, "/bin/cp", nil, nil, &argv, &envp)
-        for i in 0..<4 { free(argv[i]) }
-        if ret != 0 {
-            return false
-        }
-        if pid > 0 {
-            var status: Int32 = 0
-            waitpid(pid, &status, 0)
-            return status == 0
-        }
-        return false
+    // 删除目录（使用 rm -rf 跨沙盒删除）
+    private func removeItemWithFallback(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        // FileManager 删不掉就用 rm -rf
+        _ = runShell("rm -rf \"\(url.path)\"")
     }
 }

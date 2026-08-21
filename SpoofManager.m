@@ -108,8 +108,14 @@
 }
 
 - (void)loadConfig {
-    NSString *configPath = @"/var/mobile/Library/DeviceSpoofPro/config.plist";
+    // Rootless 越狱使用 /var/jb 前缀，Rootful 使用原始路径
+    NSString *configPath = @"/var/jb/var/mobile/Library/DeviceSpoofPro/config.plist";
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:configPath];
+    if (!dict) {
+        // 回退到 Rootful 路径
+        configPath = @"/var/mobile/Library/DeviceSpoofPro/config.plist";
+        dict = [NSDictionary dictionaryWithContentsOfFile:configPath];
+    }
 
     if (dict) {
         self.config.modelIdentifier = dict[@"modelIdentifier"] ?: @"iPhone15,2";

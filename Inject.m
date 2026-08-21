@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <Security/Security.h>
 #import <spawn.h>
+#import "SSZipArchive.h"
 #if __IPHONE_OS_VERSION_MIN_REQUIRED >= 140000
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #endif
@@ -19,9 +20,8 @@
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *url = urls.firstObject;
     if (!url) return;
-    // 安全访问
+    // 安全访问 -> 复制 -> 释放（顺序不能错）
     [url startAccessingSecurityScopedResource];
-    // 复制到临时目录（因为 SecurityScoped URL 不能直接用 posix_spawn 访问）
     NSString *tmpZip = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_import.zip"];
     [[NSFileManager defaultManager] removeItemAtPath:tmpZip error:nil];
     NSError *err;
@@ -35,7 +35,6 @@
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
-    // iOS 13 以下兼容
     [url startAccessingSecurityScopedResource];
     NSString *tmpZip = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_import.zip"];
     [[NSFileManager defaultManager] removeItemAtPath:tmpZip error:nil];
@@ -43,6 +42,95 @@
     [url stopAccessingSecurityScopedResource];
     if (self.onPicked) self.onPicked(tmpZip);
 }
+@end
+
+// 进度 HUD 视图
+@interface ProgressHUD : UIView
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *percentLabel;
+@property (nonatomic, strong) UIActivityIndicatorView *spinner;
++ (instancetype)shared;
+- (void)showWithTitle:(NSString *)title;
+- (void)updateProgress:(double)progress;
+- (void)hide;
+@end
+
+@implementation ProgressHUD
+
++ (instancetype)shared {
+    static ProgressHUD *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[ProgressHUD alloc] init];
+    });
+    return instance;
+}
+
+- (id)init {
+    self = [super initWithFrame:CGRectMake(0, 0, 200, 90)];
+    if (self) {
+        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.8];
+        self.layer.cornerRadius = 14;
+        self.clipsToBounds = YES;
+        self.userInteractionEnabled = NO;
+
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 12, 200, 22)];
+        _titleLabel.textAlignment = NSTextAlignmentCenter;
+        _titleLabel.textColor = [UIColor whiteColor];
+        _titleLabel.font = [UIFont boldSystemFontOfSize:16];
+        [self addSubview:_titleLabel];
+
+        _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+        _spinner.center = CGPointMake(100, 45);
+        [self addSubview:_spinner];
+
+        _percentLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 65, 200, 20)];
+        _percentLabel.textAlignment = NSTextAlignmentCenter;
+        _percentLabel.textColor = [UIColor whiteColor];
+        _percentLabel.font = [UIFont systemFontOfSize:14];
+        _percentLabel.text = @"0%";
+        [self addSubview:_percentLabel];
+    }
+    return self;
+}
+
+- (void)showWithTitle:(NSString *)title {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *win = [Injector getKeyWindow];
+        if (!win) return;
+        self.center = win.center;
+        self.alpha = 0;
+        self.transform = CGAffineTransformMakeScale(0.8, 0.8);
+        [win addSubview:self];
+        self.titleLabel.text = title;
+        self.percentLabel.text = @"0%";
+        [self.spinner startAnimating];
+        [UIView animateWithDuration:0.25 animations:^{
+            self.alpha = 1;
+            self.transform = CGAffineTransformIdentity;
+        }];
+    });
+}
+
+- (void)updateProgress:(double)progress {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        int percent = (int)(progress * 100);
+        self.percentLabel.text = [NSString stringWithFormat:@"%d%%", percent];
+    });
+}
+
+- (void)hide {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.spinner stopAnimating];
+        [UIView animateWithDuration:0.25 animations:^{
+            self.alpha = 0;
+            self.transform = CGAffineTransformMakeScale(0.8, 0.8);
+        } completion:^(BOOL finished) {
+            [self removeFromSuperview];
+        }];
+    });
+}
+
 @end
 
 @interface Injector : NSObject
@@ -152,10 +240,10 @@
     [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - 导出（后台线程执行）
+#pragma mark - 导出（SSZipArchive + 进度百分比）
 
 + (void)exportAccount {
-    [Injector showAlert:@"正在导出" message:@"正在备份账号数据，请稍候..."];
+    [[ProgressHUD shared] showWithTitle:@"导出中..."];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *home = NSHomeDirectory();
@@ -191,21 +279,28 @@
             NSLog(@"[Injector] Keychain 导出成功");
         }
 
-        // 打包为 zip
+        // 使用 SSZipArchive 压缩（带进度回调）
         NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
         [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
 
-        NSString *cmd = [NSString stringWithFormat:@"cd \"%@\" && /usr/bin/zip -r -q \"%@\" . 2>&1", exportDir, zipPath];
-        int status = [Injector runCommand:cmd];
+        BOOL success = [SSZipArchive createZipFileAtPath:zipPath
+                                 withContentsOfDirectory:exportDir
+                                     keepParentDirectory:NO
+                                       compressionLevel:-1
+                                               password:nil
+                                                    AES:NO
+                                         progressHandler:^(double progress) {
+            [[ProgressHUD shared] updateProgress:progress];
+        }];
 
         [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
+        [[ProgressHUD shared] hide];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (status != 0 || ![[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
-                [Injector showAlert:@"导出失败" message:@"压缩过程出错，请重试"];
+            if (!success || ![[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
+                [Injector showAlert:@"导出失败" message:@"压缩失败，请重试"];
                 return;
             }
-            // 弹出分享菜单
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出完成"
                                                                            message:[NSString stringWithFormat:@"备份已保存:\n%@\n\n点击分享导出", zipPath]
                                                                     preferredStyle:UIAlertControllerStyleAlert];
@@ -218,10 +313,9 @@
     });
 }
 
-#pragma mark - 导入（系统文件选择器）
+#pragma mark - 导入（文件选择器 + SSZipArchive 进度）
 
 + (void)importAccount {
-    // 先检查 Documents 下有没有现成的备份
     NSString *docPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
     NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
 
@@ -236,7 +330,6 @@
     }
 
     [alert addAction:[UIAlertAction actionWithTitle:@"从文件 App 选择 .zip" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        // 弹出系统文件选择器
         dispatch_async(dispatch_get_main_queue(), ^{
             UIDocumentPickerViewController *picker;
             if (@available(iOS 14.0, *)) {
@@ -249,13 +342,11 @@
             }
             picker.allowsMultipleSelection = NO;
 
-            // 创建实例代理对象（不能用类方法做 delegate）
             DocPickerDelegate *delegate = [[DocPickerDelegate alloc] init];
             delegate.onPicked = ^(NSString *path) {
                 [Injector doImportFromPath:path];
             };
             picker.delegate = delegate;
-            // 持有代理对象防止释放
             objc_setAssociatedObject(picker, @"pickerDelegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
             [[Injector topViewController] presentViewController:picker animated:YES completion:nil];
@@ -267,7 +358,7 @@
 }
 
 + (void)doImportFromPath:(NSString *)zipPath {
-    [Injector showAlert:@"正在导入" message:@"正在恢复账号数据，请稍候..."];
+    [[ProgressHUD shared] showWithTitle:@"导入中..."];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *home = NSHomeDirectory();
@@ -277,10 +368,18 @@
         [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
         [[NSFileManager defaultManager] createDirectoryAtPath:extractDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-        NSString *cmd = [NSString stringWithFormat:@"/usr/bin/unzip -o -q \"%@\" -d \"%@\" 2>&1", zipPath, extractDir];
-        int status = [Injector runCommand:cmd];
+        // 使用 SSZipArchive 解压（带进度回调）
+        BOOL success = [SSZipArchive unzipFileAtPath:zipPath
+                                       toDestination:extractDir
+                                           overwrite:YES
+                                            password:nil
+                                      progressHandler:^(double progress) {
+            [[ProgressHUD shared] updateProgress:progress];
+        }];
 
-        if (status != 0) {
+        [[ProgressHUD shared] hide];
+
+        if (!success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [Injector showAlert:@"导入失败" message:@"解压 ZIP 失败，请确认文件格式正确"];
             });

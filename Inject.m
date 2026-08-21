@@ -7,6 +7,9 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #endif
 
+// 前向声明
+@class Injector;
+
 // 双指双击手势
 @interface TwoFingerDoubleTap : UITapGestureRecognizer @end
 @implementation TwoFingerDoubleTap @end
@@ -289,8 +292,11 @@
                                        compressionLevel:-1
                                                password:nil
                                                     AES:NO
-                                         progressHandler:^(double progress) {
-            [[ProgressHUD shared] updateProgress:progress];
+                                         progressHandler:^(NSUInteger entryNumber, NSUInteger total) {
+            if (total > 0) {
+                double progress = (double)entryNumber / (double)total;
+                [[ProgressHUD shared] updateProgress:progress];
+            }
         }];
 
         [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
@@ -373,8 +379,14 @@
                                        toDestination:extractDir
                                            overwrite:YES
                                             password:nil
-                                      progressHandler:^(double progress) {
-            [[ProgressHUD shared] updateProgress:progress];
+                                      progressHandler:^(NSString *entry, unz_file_info zipInfo, long entryNumber, long total) {
+            if (total > 0) {
+                double progress = (double)entryNumber / (double)total;
+                [[ProgressHUD shared] updateProgress:progress];
+            }
+        }
+                                    completionHandler:^(NSString *path, BOOL succeeded, NSError * _Nullable error) {
+            NSLog(@"[Injector] 解压完成: succeeded=%d", succeeded);
         }];
 
         [[ProgressHUD shared] hide];

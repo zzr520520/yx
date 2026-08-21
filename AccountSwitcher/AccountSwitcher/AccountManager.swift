@@ -100,25 +100,25 @@ class AccountManager {
             var result: (Bool, String)
 
             do {
-                // 备份 Preferences
+                // 备份 Preferences (使用降级拷贝，FileManager 失败时自动用 cp -rf)
                 let prefsSrc = container.appendingPathComponent("Library/Preferences")
                 let prefsDst = tempDir.appendingPathComponent("Preferences")
                 if FileManager.default.fileExists(atPath: prefsSrc.path) {
-                    try FileManager.default.copyItem(at: prefsSrc, to: prefsDst)
+                    try self.copyItemWithFallback(from: prefsSrc, to: prefsDst)
                 }
 
                 // 备份 Application Support
                 let appSupportSrc = container.appendingPathComponent("Library/Application Support")
                 let appSupportDst = tempDir.appendingPathComponent("Application Support")
                 if FileManager.default.fileExists(atPath: appSupportSrc.path) {
-                    try FileManager.default.copyItem(at: appSupportSrc, to: appSupportDst)
+                    try self.copyItemWithFallback(from: appSupportSrc, to: appSupportDst)
                 }
 
                 // 备份 Documents (有些游戏会将Token存在这里)
                 let docsSrc = container.appendingPathComponent("Documents")
                 let docsDst = tempDir.appendingPathComponent("Documents")
                 if FileManager.default.fileExists(atPath: docsSrc.path) {
-                    try FileManager.default.copyItem(at: docsSrc, to: docsDst)
+                    try self.copyItemWithFallback(from: docsSrc, to: docsDst)
                 }
 
                 // 导出相关的 Keychain 数据
@@ -164,7 +164,7 @@ class AccountManager {
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
                 try FileManager.default.unzipItem(at: fileURL, to: tempDir)
 
-                // 恢复 Preferences、Application Support、Documents
+                // 恢复 Preferences、Application Support、Documents (使用降级拷贝)
                 let itemsToRestore = ["Preferences", "Application Support", "Documents"]
                 for item in itemsToRestore {
                     let src = tempDir.appendingPathComponent(item)
@@ -174,7 +174,7 @@ class AccountManager {
                         if FileManager.default.fileExists(atPath: dst.path) {
                             try? FileManager.default.removeItem(at: dst)
                         }
-                        try FileManager.default.copyItem(at: src, to: dst)
+                        try self.copyItemWithFallback(from: src, to: dst)
                     }
                 }
 
@@ -275,5 +275,43 @@ class AccountManager {
             var status: Int32 = 0
             waitpid(pid, &status, 0)
         }
+    }
+
+    // 降级拷贝：FileManager.copyItem 失败时，用 posix_spawn 调 cp -rf 跨沙盒拷贝
+    private func copyItemWithFallback(from src: URL, to dst: URL) throws {
+        // 先尝试 FileManager 标准拷贝
+        do {
+            try FileManager.default.copyItem(at: src, to: dst)
+        } catch {
+            // FileManager 失败，降级用 cp -rf
+            let result = spawnCp(src: src, dst: dst)
+            if !result {
+                throw error
+            }
+        }
+    }
+
+    // 通过 posix_spawn 调用 /bin/cp -rf 实现跨沙盒拷贝
+    private func spawnCp(src: URL, dst: URL) -> Bool {
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [
+            strdup("cp"),
+            strdup("-rf"),
+            strdup(src.path),
+            strdup(dst.path),
+            nil
+        ]
+        var envp: [UnsafeMutablePointer<CChar>?] = [nil]
+        let ret = posix_spawn(&pid, "/bin/cp", nil, nil, &argv, &envp)
+        for i in 0..<4 { free(argv[i]) }
+        if ret != 0 {
+            return false
+        }
+        if pid > 0 {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            return status == 0
+        }
+        return false
     }
 }

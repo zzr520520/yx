@@ -2,12 +2,47 @@
 #import <objc/runtime.h>
 #import <Security/Security.h>
 #import <spawn.h>
+#if __IPHONE_OS_VERSION_MIN_REQUIRED >= 140000
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#endif
 
-// 自定义手势：双指双击
-@interface TwoFingerDoubleTap : UITapGestureRecognizer
+// 双指双击手势
+@interface TwoFingerDoubleTap : UITapGestureRecognizer @end
+@implementation TwoFingerDoubleTap @end
+
+// 文件选择器代理（实例对象，不能用类方法做 delegate）
+@interface DocPickerDelegate : NSObject <UIDocumentPickerDelegate>
+@property (nonatomic, copy) void (^onPicked)(NSString *path);
 @end
 
-@implementation TwoFingerDoubleTap
+@implementation DocPickerDelegate
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+    // 安全访问
+    [url startAccessingSecurityScopedResource];
+    // 复制到临时目录（因为 SecurityScoped URL 不能直接用 posix_spawn 访问）
+    NSString *tmpZip = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_import.zip"];
+    [[NSFileManager defaultManager] removeItemAtPath:tmpZip error:nil];
+    NSError *err;
+    [[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:tmpZip] error:&err];
+    [url stopAccessingSecurityScopedResource];
+    if (err) {
+        NSLog(@"[Injector] 复制选中文件失败: %@", err);
+        return;
+    }
+    if (self.onPicked) self.onPicked(tmpZip);
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
+    // iOS 13 以下兼容
+    [url startAccessingSecurityScopedResource];
+    NSString *tmpZip = [NSTemporaryDirectory() stringByAppendingPathComponent:@"picked_import.zip"];
+    [[NSFileManager defaultManager] removeItemAtPath:tmpZip error:nil];
+    [[NSFileManager defaultManager] copyItemAtURL:url toURL:[NSURL fileURLWithPath:tmpZip] error:nil];
+    [url stopAccessingSecurityScopedResource];
+    if (self.onPicked) self.onPicked(tmpZip);
+}
 @end
 
 @interface Injector : NSObject
@@ -24,19 +59,18 @@
 + (UIViewController *)topViewController;
 + (UIWindow *)getKeyWindow;
 + (int)runCommand:(NSString *)command;
++ (void)showAlert:(NSString *)title message:(NSString *)msg;
 @end
 
 @implementation Injector
 
 + (void)load {
     NSLog(@"[Injector] dylib loaded, waiting for app launch...");
-    // 监听 App 完全启动通知（比 +load 延迟可靠得多）
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification * _Nonnull note) {
         NSLog(@"[Injector] App did finish launching, scheduling UI setup");
-        // 延迟 2 秒，确保游戏 rootViewController 和 keyWindow 完全就绪
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [Injector onAppDidLaunch];
         });
@@ -47,8 +81,6 @@
 
 + (void)onAppDidLaunch {
     [Injector addGestureToWindow];
-
-    // 持续监听 keyWindow 变化（游戏可能重建 window）
     [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidActivateNotification
                                                    object:nil
                                                     queue:[NSOperationQueue mainQueue]
@@ -68,18 +100,13 @@
         });
         return;
     }
-
-    // 防止重复添加
     NSNumber *token = objc_getAssociatedObject(keyWindow, @"injectorGestureAdded");
-    if ([token boolValue]) {
-        return;
-    }
+    if ([token boolValue]) return;
 
-    // 双指双击手势
     TwoFingerDoubleTap *tap = [[TwoFingerDoubleTap alloc] initWithTarget:self action:@selector(showMenu)];
-    tap.numberOfTapsRequired = 2;      // 双击
-    tap.numberOfTouchesRequired = 2;   // 双指
-    tap.cancelsTouchesInView = NO;     // 不拦截游戏触摸
+    tap.numberOfTapsRequired = 2;
+    tap.numberOfTouchesRequired = 2;
+    tap.cancelsTouchesInView = NO;
     [keyWindow addGestureRecognizer:tap];
 
     objc_setAssociatedObject(keyWindow, @"injectorGestureAdded", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -87,7 +114,6 @@
 }
 
 + (UIWindow *)getKeyWindow {
-    // iOS 13+: 优先用 UIWindowScene
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
@@ -98,10 +124,8 @@
             }
         }
     }
-    // Fallback: iOS 12 及以下
     UIWindow *kw = [UIApplication sharedApplication].keyWindow;
     if (kw) return kw;
-    // 最终兜底
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if (!w.hidden && w.alpha > 0) return w;
     }
@@ -128,95 +152,147 @@
     [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - 导出
+#pragma mark - 导出（后台线程执行）
 
 + (void)exportAccount {
-    NSString *home = NSHomeDirectory();
-    NSString *docPath = [home stringByAppendingPathComponent:@"Documents"];
-    NSString *prefPath = [home stringByAppendingPathComponent:@"Library/Preferences"];
-    NSString *appSupportPath = [home stringByAppendingPathComponent:@"Library/Application Support"];
+    [Injector showAlert:@"正在导出" message:@"正在备份账号数据，请稍候..."];
 
-    NSString *tmpDir = NSTemporaryDirectory();
-    NSString *exportDir = [tmpDir stringByAppendingPathComponent:@"export_backup"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *home = NSHomeDirectory();
+        NSString *docPath = [home stringByAppendingPathComponent:@"Documents"];
+        NSString *prefPath = [home stringByAppendingPathComponent:@"Library/Preferences"];
+        NSString *appSupportPath = [home stringByAppendingPathComponent:@"Library/Application Support"];
 
-    [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
-    [[NSFileManager defaultManager] createDirectoryAtPath:exportDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *tmpDir = NSTemporaryDirectory();
+        NSString *exportDir = [tmpDir stringByAppendingPathComponent:@"export_backup"];
 
-    // 复制需要备份的目录
-    NSArray *paths = @[docPath, prefPath, appSupportPath];
-    NSArray *names = @[@"Documents", @"Preferences", @"Application Support"];
+        [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
+        [[NSFileManager defaultManager] createDirectoryAtPath:exportDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    for (int i = 0; i < paths.count; i++) {
-        NSString *src = paths[i];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:src]) {
-            NSString *dest = [exportDir stringByAppendingPathComponent:names[i]];
-            NSError *err;
-            [[NSFileManager defaultManager] copyItemAtPath:src toPath:dest error:&err];
-            if (err) NSLog(@"[Injector] 复制 %@ 失败: %@", src, err);
+        // 复制需要备份的目录
+        NSArray *paths = @[docPath, prefPath, appSupportPath];
+        NSArray *names = @[@"Documents", @"Preferences", @"Application Support"];
+
+        for (int i = 0; i < paths.count; i++) {
+            NSString *src = paths[i];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:src]) {
+                NSString *dest = [exportDir stringByAppendingPathComponent:names[i]];
+                NSError *err;
+                [[NSFileManager defaultManager] copyItemAtPath:src toPath:dest error:&err];
+                if (err) NSLog(@"[Injector] 复制 %@ 失败: %@", src, err);
+            }
         }
-    }
 
-    // 导出 Keychain 数据
-    NSData *keychainData = [self dumpKeychain];
-    if (keychainData) {
-        NSString *kcPath = [exportDir stringByAppendingPathComponent:@"keychain.json"];
-        [keychainData writeToFile:kcPath atomically:YES];
-        NSLog(@"[Injector] Keychain 导出成功");
-    }
+        // 导出 Keychain
+        NSData *keychainData = [self dumpKeychain];
+        if (keychainData) {
+            NSString *kcPath = [exportDir stringByAppendingPathComponent:@"keychain.json"];
+            [keychainData writeToFile:kcPath atomically:YES];
+            NSLog(@"[Injector] Keychain 导出成功");
+        }
 
-    // 打包为 zip
+        // 打包为 zip
+        NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
+        [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
+
+        NSString *cmd = [NSString stringWithFormat:@"cd \"%@\" && /usr/bin/zip -r -q \"%@\" . 2>&1", exportDir, zipPath];
+        int status = [Injector runCommand:cmd];
+
+        [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (status != 0 || ![[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
+                [Injector showAlert:@"导出失败" message:@"压缩过程出错，请重试"];
+                return;
+            }
+            // 弹出分享菜单
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出完成"
+                                                                           message:[NSString stringWithFormat:@"备份已保存:\n%@\n\n点击分享导出", zipPath]
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"分享文件" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                [Injector shareFile:zipPath];
+            }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+            [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+#pragma mark - 导入（系统文件选择器）
+
++ (void)importAccount {
+    // 先检查 Documents 下有没有现成的备份
+    NSString *docPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
     NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
-    [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
 
-    NSString *cmd = [NSString stringWithFormat:@"cd \"%@\" && /usr/bin/zip -r \"%@\" . 2>&1", exportDir, zipPath];
-    [Injector runCommand:cmd];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入账号数据"
+                                                                   message:@"选择导入方式"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [[NSFileManager defaultManager] removeItemAtPath:exportDir error:nil];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"使用 Documents 下的备份" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            [Injector doImportFromPath:zipPath];
+        }]];
+    }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出完成"
-                                                                   message:[NSString stringWithFormat:@"备份已保存:\n%@\n\n点击分享导出文件", zipPath]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"分享文件" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [Injector shareFile:zipPath];
+    [alert addAction:[UIAlertAction actionWithTitle:@"从文件 App 选择 .zip" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        // 弹出系统文件选择器
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIDocumentPickerViewController *picker;
+            if (@available(iOS 14.0, *)) {
+                picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType typeWithIdentifier:@"public.zip-archive"]]];
+            } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.zip-archive"] inMode:UIDocumentPickerModeImport];
+#pragma clang diagnostic pop
+            }
+            picker.allowsMultipleSelection = NO;
+
+            // 创建实例代理对象（不能用类方法做 delegate）
+            DocPickerDelegate *delegate = [[DocPickerDelegate alloc] init];
+            delegate.onPicked = ^(NSString *path) {
+                [Injector doImportFromPath:path];
+            };
+            picker.delegate = delegate;
+            // 持有代理对象防止释放
+            objc_setAssociatedObject(picker, @"pickerDelegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+            [[Injector topViewController] presentViewController:picker animated:YES completion:nil];
+        });
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - 导入
-
-+ (void)importAccount {
-    NSString *home = NSHomeDirectory();
-    NSString *docPath = [home stringByAppendingPathComponent:@"Documents"];
-    NSString *zipPath = [docPath stringByAppendingPathComponent:@"account_backup.zip"];
-
-    if (![[NSFileManager defaultManager] fileExistsAtPath:zipPath]) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未找到备份"
-                                                                       message:@"请将 account_backup.zip 放入游戏 Documents 目录\n或通过分享导入"
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-        [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-
-    [Injector doImportFromPath:zipPath];
-}
-
 + (void)doImportFromPath:(NSString *)zipPath {
-    NSString *home = NSHomeDirectory();
-    NSString *tmpDir = NSTemporaryDirectory();
-    NSString *extractDir = [tmpDir stringByAppendingPathComponent:@"import_backup"];
+    [Injector showAlert:@"正在导入" message:@"正在恢复账号数据，请稍候..."];
 
-    [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
-    [[NSFileManager defaultManager] createDirectoryAtPath:extractDir withIntermediateDirectories:YES attributes:nil error:nil];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *home = NSHomeDirectory();
+        NSString *tmpDir = NSTemporaryDirectory();
+        NSString *extractDir = [tmpDir stringByAppendingPathComponent:@"import_backup"];
 
-    NSString *cmd = [NSString stringWithFormat:@"/usr/bin/unzip -o \"%@\" -d \"%@\" 2>&1", zipPath, extractDir];
-    [Injector runCommand:cmd];
+        [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
+        [[NSFileManager defaultManager] createDirectoryAtPath:extractDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    NSArray *items = @[@"Documents", @"Preferences", @"Application Support"];
-    for (NSString *item in items) {
-        NSString *src = [extractDir stringByAppendingPathComponent:item];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:src]) {
+        NSString *cmd = [NSString stringWithFormat:@"/usr/bin/unzip -o -q \"%@\" -d \"%@\" 2>&1", zipPath, extractDir];
+        int status = [Injector runCommand:cmd];
+
+        if (status != 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [Injector showAlert:@"导入失败" message:@"解压 ZIP 失败，请确认文件格式正确"];
+            });
+            [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
+            return;
+        }
+
+        NSArray *items = @[@"Documents", @"Preferences", @"Application Support"];
+        for (NSString *item in items) {
+            NSString *src = [extractDir stringByAppendingPathComponent:item];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:src]) continue;
+
             NSString *dest;
             if ([item isEqualToString:@"Documents"]) {
                 dest = [home stringByAppendingPathComponent:@"Documents"];
@@ -226,25 +302,23 @@
             [[NSFileManager defaultManager] removeItemAtPath:dest error:nil];
             [[NSFileManager defaultManager] moveItemAtPath:src toPath:dest error:nil];
         }
-    }
 
-    // 恢复 Keychain
-    NSString *kcPath = [extractDir stringByAppendingPathComponent:@"keychain.json"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:kcPath]) {
-        NSData *kcData = [NSData dataWithContentsOfFile:kcPath];
-        if (kcData) {
-            [Injector restoreKeychain:kcData];
-            NSLog(@"[Injector] Keychain 恢复成功");
+        // 恢复 Keychain
+        NSString *kcPath = [extractDir stringByAppendingPathComponent:@"keychain.json"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:kcPath]) {
+            NSData *kcData = [NSData dataWithContentsOfFile:kcPath];
+            if (kcData) {
+                [Injector restoreKeychain:kcData];
+                NSLog(@"[Injector] Keychain 恢复成功");
+            }
         }
-    }
 
-    [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:extractDir error:nil];
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入完成"
-                                                                   message:@"账号数据已恢复，请重启游戏生效"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-    [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [Injector showAlert:@"导入完成" message:@"账号数据已恢复，请重启游戏生效"];
+        });
+    });
 }
 
 #pragma mark - 分享
@@ -284,7 +358,6 @@
         NSString *service = item[(__bridge id)kSecAttrService];
         NSString *account = item[(__bridge id)kSecAttrAccount];
         NSData *data = item[(__bridge id)kSecValueData];
-
         if (service && account && data) {
             [exportList addObject:@{
                 @"service": service,
@@ -337,6 +410,14 @@
         rootVC = rootVC.presentedViewController;
     }
     return rootVC;
+}
+
++ (void)showAlert:(NSString *)title message:(NSString *)msg {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+        [[Injector topViewController] presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 + (int)runCommand:(NSString *)command {

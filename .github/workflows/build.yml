@@ -1,0 +1,60 @@
+name: Build TrollStore TIPA
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: '15.2'
+
+    - name: Install XcodeGen
+      run: brew install xcodegen
+
+    - name: Generate Xcode Project
+      run: |
+        cd AccountSwitcher
+        xcodegen generate
+
+    - name: Resolve Swift Package Dependencies
+      run: |
+        cd AccountSwitcher
+        xcodebuild -resolvePackageDependencies \
+          -project AccountSwitcher.xcodeproj \
+          -scheme AccountSwitcher
+
+    - name: Build App
+      run: |
+        cd AccountSwitcher
+        xcodebuild -scheme AccountSwitcher \
+          -project AccountSwitcher.xcodeproj \
+          -configuration Release \
+          -sdk iphoneos \
+          -derivedDataPath build \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+
+    - name: Install ldid
+      run: brew install ldid
+
+    - name: Package to TIPA with TrollStore Entitlements
+      run: |
+        mkdir -p Payload
+        cp -r AccountSwitcher/build/Build/Products/Release-iphoneos/AccountSwitcher.app Payload/
+        ldid -S../Entitlements.plist Payload/AccountSwitcher.app/AccountSwitcher
+        zip -r AccountSwitcher.tipa Payload
+
+    - name: Upload TIPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AccountSwitcher-TrollStore
+        path: AccountSwitcher.tipa

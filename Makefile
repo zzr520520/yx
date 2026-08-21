@@ -11,7 +11,6 @@ TWEAK_NAME = DeviceSpoofPro
 DeviceSpoofPro_FILES = Tweak.xm SpoofManager.m KeychainHelper.m fishhook.c
 DeviceSpoofPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 DeviceSpoofPro_FRAMEWORKS = UIKit CoreFoundation Foundation CoreMotion Security
-DeviceSpoofPro_PRIVATE_FRAMEWORKS = MobileGestalt
 DeviceSpoofPro_LDFLAGS = -lsubstrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk

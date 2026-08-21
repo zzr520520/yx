@@ -214,8 +214,21 @@ class AccountManager {
     }
 
     // 终止所有暗黑相关进程
-    // 注：iOS SDK 不提供 Process/NSTask，这里通过 POSIX system() 调用 killall
+    // 注：iOS SDK 不提供 Process/NSTask/system()，使用 posix_spawn 调用 killall
     private func killGameProcess() {
-        system("killall -9 DiabloImmortal")
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [
+            strdup("killall"),
+            strdup("-9"),
+            strdup("DiabloImmortal"),
+            nil
+        ]
+        var envp: [UnsafeMutablePointer<CChar>?] = [nil]
+        posix_spawn(&pid, "/usr/bin/killall", nil, nil, &argv, &envp)
+        for i in 0..<3 { free(argv[i]) }
+        if pid > 0 {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+        }
     }
 }

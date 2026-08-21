@@ -50,14 +50,43 @@ jobs:
 
     - name: Add postinst script (uicache + killall)
       run: |
-        brew install dpkg
         cd packages
         DEB=$(ls *.deb | head -1)
         echo "Processing: $DEB"
-        rm -rf extracted
-        dpkg-deb -R "$DEB" extracted
-        cat > extracted/DEBIAN/postinst << 'POSTINST'
-#!/bin/bash
+
+        # 用 Python 注入 postinst 脚本到 .deb 的 control.tar 中
+        python3 << 'PYEOF'
+        import tarfile
+        import io
+        import os
+        import shutil
+
+        deb_name = os.listdir('.')[0]
+        if not deb_name.endswith('.deb'):
+            print(f"ERROR: No .deb found, got {deb_name}")
+            exit(1)
+
+        print(f"Processing: {deb_name}")
+
+        # .deb 是 ar 归档，包含 debian-binary, control.tar.*, data.tar.*
+        # 用 ar 提取
+        os.system(f"ar x {deb_name}")
+
+        # 找到 control 压缩包
+        control_tar = None
+        for f in os.listdir('.'):
+            if f.startswith('control.tar'):
+                control_tar = f
+                break
+
+        if not control_tar:
+            print("ERROR: control.tar not found")
+            exit(1)
+
+        print(f"Found control archive: {control_tar}")
+
+        # 读取 postinst 脚本内容
+        postinst_content = b"""#!/bin/bash
 echo "[DeviceSpoofPro] Running uicache to register app icon..."
 if command -v uicache &>/dev/null; then
   uicache
@@ -69,12 +98,80 @@ fi
 echo "[DeviceSpoofPro] Restarting SpringBoard..."
 killall -9 SpringBoard 2>/dev/null || true
 exit 0
-POSTINST
-        chmod 755 extracted/DEBIAN/postinst
-        dpkg-deb -b extracted "$DEB"
-        rm -rf extracted
+"""
+
+        # 读取原始 control.tar
+        with open(control_tar, 'rb') as f:
+            control_data = f.read()
+
+        # 判断压缩格式
+        if control_tar.endswith('.gz'):
+            import gzip
+            tar_bytes = gzip.decompress(control_data)
+            new_control_name = 'control.tar.gz'
+        elif control_tar.endswith('.xz'):
+            import lzma
+            tar_bytes = lzma.decompress(control_data)
+            new_control_name = 'control.tar.xz'
+        elif control_tar.endswith('.lzma'):
+            import lzma
+            tar_bytes = lzma.decompress(control_data)
+            new_control_name = 'control.tar.lzma'
+        else:
+            tar_bytes = control_data
+            new_control_name = 'control.tar'
+
+        # 添加 postinst 到 tar
+        new_tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r') as tar:
+            with tarfile.open(fileobj=new_tar_buf, mode='w') as new_tar:
+                for member in tar.getmembers():
+                    new_tar.addfile(member, tar.extractfile(member))
+
+                # 添加 postinst
+                info = tarfile.TarInfo(name='postinst')
+                info.size = len(postinst_content)
+                info.mode = 0o755
+                info.type = tarfile.REGTYPE
+                new_tar.addfile(info, io.BytesIO(postinst_content))
+
+        new_tar_data = new_tar_buf.getvalue()
+
+        # 重新压缩
+        if new_control_name.endswith('.gz'):
+            new_control_data = gzip.compress(new_tar_data)
+        elif new_control_name.endswith('.xz'):
+            new_control_data = lzma.compress(new_tar_data)
+        elif new_control_name.endswith('.lzma'):
+            new_control_data = lzma.compress(new_tar_data, format=lzma.FORMAT_ALONE)
+        else:
+            new_control_data = new_tar_data
+
+        # 写入新的 control.tar
+        os.remove(control_tar)
+        with open(new_control_name, 'wb') as f:
+            f.write(new_control_data)
+
+        # 重新打包 .deb (ar 归档)
+        # 先删除旧的 .deb
+        os.remove(deb_name)
+
+        # 创建新的 .deb
+        os.system(f'ar rcs {deb_name} debian-binary {new_control_name} data.tar.*')
+
+        # 清理临时文件
+        for f in ['debian-binary', new_control_name]:
+            if os.path.exists(f):
+                os.remove(f)
+        for f in os.listdir('.'):
+            if f.startswith('data.tar'):
+                os.remove(f)
+
+        print(f"Successfully added postinst to {deb_name}")
+        PYEOF
+
         echo "=== Final deb contents ==="
-        dpkg-deb -c "$DEB"
+        ar t "$DEB"
 
     - name: Upload deb
       uses: actions/upload-artifact@v4

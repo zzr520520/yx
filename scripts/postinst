@@ -1,0 +1,12 @@
+#!/bin/bash
+echo "[DeviceSpoofPro] Running uicache to register app icon..."
+if command -v uicache >/dev/null 2>&1; then
+  uicache
+elif [ -x /var/jb/usr/bin/uicache ]; then
+  /var/jb/usr/bin/uicache
+elif [ -x /usr/bin/uicache ]; then
+  /usr/bin/uicache
+fi
+echo "[DeviceSpoofPro] Restarting SpringBoard..."
+killall -9 SpringBoard 2>/dev/null || true
+exit 0
